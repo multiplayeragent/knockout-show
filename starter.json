@@ -1,0 +1,21 @@
+{
+  "name": "Knockout Show",
+  "genre": "platformer",
+  "dim": "3D",
+  "mode": "Party",
+  "players": "4–16",
+  "hook": "Survive each round. Last one standing wins.",
+  "how": "Three rounds: jump the spinning bar, dodge cannonballs while the floor drops away ring by ring, then a final on tiles that fall a moment after you step on them. Fall off and you're out. The last bean standing wins the crown.",
+  "controls": "WASD or arrow keys and Space, or the touch stick and Jump button",
+  "uses": [
+    ["Host-run rounds", "The host's browser runs the show and counts who is out; if it leaves, the next player takes over."],
+    ["Live sync", "Every bean, spinning bar and falling tile is the same for everyone."],
+    ["Bots", "Bots fill the show until enough people join."],
+    ["Leaderboard", "Crowns: the players who won the most shows."]
+  ],
+  "ideas": [
+    "Add a race round to a finish line",
+    "Add team rounds",
+    "Add costumes you unlock by winning"
+  ]
+}

@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Knockout Show</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #8fd3ff; }
+  body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; touch-action: none; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 2px 4px #0008; font-weight: 800; }
+  #round { top: max(10px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; font-size: 20px; }
+  #round small { display: block; font-size: 14px; font-weight: 700; opacity: .92; }
+  #big { inset: 0; display: grid; place-items: center; text-align: center; font-size: min(15vw, 104px); line-height: 1; color: #ffd23f; -webkit-text-stroke: 3px #7a1f5c; }
+  #big small { display: block; font-size: min(5vw, 24px); color: #fff; -webkit-text-stroke: 0; margin-bottom: 6px; }
+  #msg { top: calc(max(10px, env(safe-area-inset-top)) + 56px); left: 16px; right: 16px; text-align: center; font-size: 16px; }
+  #net { bottom: max(10px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); font-size: 12px; font-weight: 600; opacity: .85; white-space: nowrap; }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #3a0d4a66; }
+  #over[hidden], #stick[hidden], #jump[hidden] { display: none; }
+  .card { width: min(380px, 90vw); max-height: 84vh; overflow: auto; padding: 20px; border-radius: 18px; background: #2b1550; border: 2px solid #ffffff33; box-sizing: border-box; }
+  .card h2 { margin: 0 0 8px; font-size: 22px; color: #ffd23f; }
+  .card h3 { margin: 14px 0 4px; font-size: 14px; color: #ff9ad5; }
+  .card ol { margin: 0; padding-left: 24px; font-size: 14px; }
+  .card li span { float: right; font-variant-numeric: tabular-nums; }
+  .card li.me { color: #ffd23f; font-weight: 700; }
+  .card p { margin: 10px 0; font-size: 13px; opacity: .85; }
+  button.go { width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: #ffd23f; color: #3a0d4a; font: 800 17px system-ui, sans-serif; cursor: pointer; }
+  #stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; background: #ffffff22; border: 2px solid #ffffff77; pointer-events: none; }
+  #stick i { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: #ffffffaa; }
+  #jump { position: fixed; right: max(18px, env(safe-area-inset-right)); bottom: max(26px, env(safe-area-inset-bottom)); width: 92px; height: 92px; border-radius: 50%;
+          border: 3px solid #ffffffaa; background: #ff4d8d88; color: #fff; font: 800 16px system-ui, sans-serif; touch-action: none; }
+  #jump.on { background: #ffd23faa; }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+<script type="importmap">{ "imports": { "three": "./libs/three.module.min.js" } }</script>
+</head>
+<body>
+<div class="hud" id="round"></div>
+<div class="hud" id="msg"></div>
+<div class="hud" id="big"></div>
+<div class="hud" id="net">Connecting…</div>
+<div id="stick" hidden><i></i></div>
+<button id="jump" hidden>JUMP</button>
+<div id="over" hidden><div class="card">
+  <h2 id="title">Show over</h2><ol id="results"></ol>
+  <h3>Most crowns</h3><ol id="board"><li>Loading…</li></ol>
+  <p id="next"></p>
+  <button class="go" id="again">Play again</button>
+</div></div>
+<script type="module">
+/* ═══ KNOCKOUT SHOW · a Multiplayer Agent starter ══════════════════════════════════════
+ * Survive each round. Last one standing wins the crown. Party, 4–16; bots fill the show.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ the show's rounds, timers, movement, every hazard number
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host
+ *   SCENE ......... renderer, sky, slime, floating decor, particles
+ *   ARENAS ........ one object per round type (lobby, sweeper, rings, tiles): its meshes,
+ *                   its floor, its hazards, its spawn spots and how bots play it.
+ *                   Add a round: copy one, then put its name in CONFIG.show.
+ *   BEANS ......... the bean model, name tags, the crown
+ *   PHYSICS ....... running, jumping, falling, getting knocked (same code for you and bots)
+ *   SHOW (HOST) ... lobby → rounds → results, who qualified, the tiles, the bots.
+ *                   Only the host writes these.
+ *   ME ............ your bean. Each player writes only its own.
+ *   HUD & RESULTS . round banner, countdown, results card, crowns leaderboard
+ *   INPUT ......... keyboard, touch stick and jump button
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - Each player writes its OWN entity: `p` (one packed JSON field: round key, position,
+ *     heading, animation) about 15 times a second, `o` (the round key it fell out of) once,
+ *     `hb` (heartbeat) once a second, and `n`/`c` (name, color) once.
+ *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s),
+ *     worked out every frame. Only the host writes the shared fields `show` (id, v, phase,
+ *     round, seed, timers, who is in, who is out, the winner), `bots` and `tiles`.
+ *     A new host adopts all three from state and carries on.
+ *   - Hazards (the spinning bars, dropping rings, cannonballs) come from the round seed and
+ *     the clock, so every client computes the same ones. Each player checks its OWN bean
+ *     against them and reports its own fall; the host only counts.
+ *   - Tiles: a player sends "stepped" {k, i}; the host cracks that tile with a fall time and
+ *     writes `tiles`. "again" asks the host to start the next show sooner.
+ *   - ?attract plays offline with bots only (the preview video is recorded from it).
+ *   - Leaderboard "crowns": shows won (submitted with "inc"), on the results card.
+ */
+import * as THREE from "three";
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  seats: 10,             // bots fill the show up to this many contestants
+  show: ["sweeper", "rings", "tiles"], // the rounds in order; the last one is the final
+  cut: [0.3, 0.4],       // share of contestants knocked out in each qualifier round
+  lobbyMs: 8000,         // lobby countdown before a show
+  introMs: 3500,         // round name and 3-2-1 before GO
+  endMs: 3500,           // "Qualified!" pause between rounds
+  resultsMs: 12000,      // results card before the next show
+  speed: 7.5,            // running speed, units/s
+  accel: 14, airControl: 0.35, jump: 11.5, gravity: 30,
+  outY: -16,             // fall below this and you're out
+  // Sweeper: a low bar to jump and (later) a high bar to stay under
+  sweepRadius: 13, barSpeed: 0.9, barAccel: 0.035, highBarAt: 12, highBarSpeed: 0.75, barPush: 16,
+  // Rings: the floor drops ring by ring, cannonballs land where shadows grow
+  ringEdges: [15, 12, 9, 6, 3.5], ringFirst: 12, ringEvery: 8, ballFirst: 3, ballEvery: 1.2, ballWarn: 1.6, ballRadius: 2.6, ballPush: 15,
+  // Tiles (the final): two floors of hex tiles that fall after you step on them
+  hexSize: 1.3, hexRings: 6, layers: [0, -5, -10], tileDelay: 800, crumbleAfter: 40,
+  board: "crowns",
+};
+const BOT_NAMES = ["Wobbles", "Jellybean", "Bonk", "Noodle", "Sprinkles", "Gumdrop", "Boing", "Waffles", "Pudding", "Bloop", "Mochi", "Taffy", "Zippy", "Doodle", "Peanut"];
+const COLORS = ["#ff4d6d", "#4dabff", "#ffd23f", "#52d273", "#b47dff", "#ff8c42", "#ff6fb5", "#3de0d0", "#a3e635", "#f97316", "#60a5fa", "#e879f9"];
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'knockout-show',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true,
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+const memo = new Map();
+/** A shared JSON field, parsed once per change (read-only: never mutate what this returns). */
+function shared(key, fallback) {
+  const raw = S.shared[key], m = memo.get(key);
+  if (m && m.raw === raw) return m.v;
+  const v = parse(raw, fallback); memo.set(key, { raw, v }); return v;
+}
+let net = null, S = { entities: { players: {} }, shared: {} };
+const seenHb = new Map();
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+const isHost = () => livePlayers()[0] === net.sessionId;
+const isBot = (id) => id[0] === "@"; // bot ids look like "@3"; sessionIds never have an @
+
+// ── SCENE ───────────────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: !ATTRACT }); // the preview recorder renders in software: keep it cheap
+renderer.setPixelRatio(Math.min(2, devicePixelRatio || 1));
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.3, 400);
+function fit() { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+scene.add(new THREE.HemisphereLight("#ffffff", "#d08ad0", 1.5));
+const sun = new THREE.DirectionalLight("#fff4e0", 1.6); sun.position.set(30, 60, 25); scene.add(sun);
+function canvasTex(w, h, paint, repeat) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h; paint(c.getContext("2d"), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+function mulberry32(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+scene.background = canvasTex(4, 256, (c, w, h) => { const g = c.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#5fc0ff"); g.addColorStop(0.55, "#c8e8ff"); g.addColorStop(1, "#ffc2e6"); c.fillStyle = g; c.fillRect(0, 0, w, h); });
+scene.fog = new THREE.Fog("#ffcdea", 45, 140);
+// the pink slime everyone falls into
+const slimeTex = canvasTex(64, 64, (c) => { c.fillStyle = "#ff6fb8"; c.fillRect(0, 0, 64, 64); c.fillStyle = "#ff85c4"; for (let i = 0; i < 5; i++) { c.beginPath(); c.arc((i * 23) % 64, (i * 37) % 64, 3 + (i % 3) * 2, 0, 7); c.fill(); } }, true);
+slimeTex.repeat.set(30, 30);
+const slime = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshStandardMaterial({ map: slimeTex, emissive: "#ff3d9a", emissiveIntensity: 0.35 }));
+slime.rotation.x = -Math.PI / 2; slime.position.y = -21; scene.add(slime);
+// floating donuts far away (one instanced mesh)
+const decor = new THREE.InstancedMesh(new THREE.TorusGeometry(2.6, 1, 10, 20), new THREE.MeshStandardMaterial({ roughness: 0.4 }), 18);
+const decorSpots = Array.from({ length: 18 }, (_, i) => ({ a: (i / 18) * Math.PI * 2, r: 45 + (i % 3) * 12, y: -4 + (i % 4) * 5 }));
+decorSpots.forEach((d, i) => decor.setColorAt(i, new THREE.Color(COLORS[i % COLORS.length])));
+scene.add(decor);
+// confetti and dust: a ring buffer of little squares
+const PARTS = 260, parts = Array.from({ length: PARTS }, () => ({ life: 0 })), mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), e3 = new THREE.Euler(), v3 = new THREE.Vector3(), one = new THREE.Vector3();
+const partMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.24, 0.24), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }), PARTS);
+partMesh.setColorAt(0, new THREE.Color("#fff")); scene.add(partMesh);
+let nextPart = 0;
+function burst(x, y, z, color, n = 14, speed = 6) {
+  const c = new THREE.Color(color);
+  for (let i = 0; i < n; i++) {
+    const p = parts[nextPart]; partMesh.setColorAt(nextPart, c); nextPart = (nextPart + 1) % PARTS;
+    Object.assign(p, { x, y, z, vx: (Math.random() - 0.5) * speed, vy: Math.random() * speed, vz: (Math.random() - 0.5) * speed, life: 1 + Math.random() * 0.6, r: Math.random() * 6 });
+  }
+  partMesh.instanceColor.needsUpdate = true;
+}
+function drawParts(dt, now) {
+  parts.forEach((p, i) => {
+    if (p.life > 0) { p.life -= dt; p.vy -= 12 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.r += dt * 5; }
+    const s = p.life > 0 ? Math.min(1, p.life * 2) : 0;
+    mtx.compose(v3.set(p.x || 0, p.y || 0, p.z || 0), q.setFromEuler(e3.set(p.r || 0, (p.r || 0) * 0.7, 0)), one.set(s, s, s)); partMesh.setMatrixAt(i, mtx);
+  });
+  partMesh.instanceMatrix.needsUpdate = true;
+  decorSpots.forEach((d, i) => { mtx.compose(v3.set(Math.cos(d.a) * d.r, d.y + Math.sin(now / 1500 + i) * 1.2, Math.sin(d.a) * d.r), q.setFromEuler(e3.set(now / 3000 + i, i, 0)), one.set(1, 1, 1)); decor.setMatrixAt(i, mtx); });
+  decor.instanceMatrix.needsUpdate = true;
+}
+
+// ── ARENAS ──────────────────────────────────────────────────────────────────────────
+// Each round type: build(group) its meshes once; setup(seed) when a round starts;
+// ground(x, z, feetY, t) = the floor height under a point (or -Infinity); hazards(body, t, dt)
+// pushes a body around; spawn(i, n) = start spot; draw(t) animates; bot(body, t) = a bot's
+// input { mx, mz, jump }. t = seconds since GO (negative during the countdown).
+const arenas = {};
+function arena(name, def) { def.group = new THREE.Group(); def.group.visible = false; scene.add(def.group); def.build(def.group); arenas[name] = def; }
+const mat = (color, extra) => new THREE.MeshStandardMaterial({ color, roughness: 0.55, ...extra });
+const randomIn = (rmax, rmin = 0) => { const a = Math.random() * Math.PI * 2, r = rmin + Math.sqrt(Math.random()) * (rmax - rmin); return { x: Math.cos(a) * r, z: Math.sin(a) * r }; };
+function wander(b, rmax, rmin = 0) { if (!b.goal || Math.hypot(b.goal.x - b.x, b.goal.z - b.z) < 0.8 || Math.random() < 0.006) b.goal = randomIn(rmax, rmin); return b.goal; }
+function towards(b, g, slow = 1.5) { const dx = g.x - b.x, dz = g.z - b.z, d = Math.hypot(dx, dz), k = d < 0.2 ? 0 : (Math.min(1, d / slow) * b.pace) / d; return { mx: dx * k, mz: dz * k }; }
+const ringTex = (a, b, n) => canvasTex(256, 256, (c) => { for (let i = n; i > 0; i--) { c.fillStyle = i % 2 ? a : b; c.beginPath(); c.arc(128, 128, (128 * i) / n, 0, 7); c.fill(); } });
+const stripeTex = (a, b) => canvasTex(64, 8, (c) => { c.fillStyle = a; c.fillRect(0, 0, 64, 8); c.fillStyle = b; for (let x = 0; x < 64; x += 16) c.fillRect(x, 0, 8, 8); }, true);
+
+arena("lobby", {
+  title: "Lobby", hint: "Run with WASD or the stick, jump with Space. The show starts soon!", time: 0,
+  build(g) {
+    const top = canvasTex(256, 256, (c) => { for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) { c.fillStyle = (i + j) % 2 ? "#ffe3f3" : "#ffc4e5"; c.fillRect(i * 32, j * 32, 32, 32); } });
+    const side = mat("#b47dff");
+    const m = new THREE.Mesh(new THREE.BoxGeometry(18, 1, 18), [side, side, mat("#fff", { map: top }), side, side, side]); m.position.y = -0.5; g.add(m);
+  },
+  setup() {}, draw() {}, hazards() {},
+  ground: (x, z) => (Math.abs(x) < 9 && Math.abs(z) < 9 ? 0 : -Infinity),
+  spawn: (i) => ({ x: ((i % 5) - 2) * 2.8, z: (Math.floor(i / 5) % 4 - 1.5) * 2.8 }),
+  bot(b) { return { ...towards(b, wander(b, 7)), jump: Math.random() < 0.01 }; },
+});
+
+arena("sweeper", {
+  title: "Sweeper", hint: "Jump the low red bar. Stay on the ground when the yellow bar comes!", time: 45,
+  build(g) {
+    const R = CONFIG.sweepRadius;
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(R, R - 1.2, 1.4, 48), [mat("#4dabff"), mat("#fff", { map: ringTex("#7fd0ff", "#c9ecff", 6) }), mat("#4dabff")]);
+    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.6, 3.4, 24), mat("#fff", { map: stripeTex("#ffffff", "#ff6fb5") }));
+    disc.position.y = -0.7; pillar.position.y = 1.7; g.add(disc, pillar);
+    const bar = (color, y, h) => { const m = new THREE.Mesh(new THREE.BoxGeometry(2 * R + 1.5, h, h), mat("#fff", { map: stripeTex(color, "#ffffff") })); m.position.y = y; const grp = new THREE.Group(); grp.add(m); g.add(grp); return grp; };
+    this.low = bar("#ff4d6d", 0.42, 0.62); this.high = bar("#ffc21a", 2.05, 0.5);
+  },
+  setup(seed) { const r = mulberry32(seed); this.dir = r() < 0.5 ? 1 : -1; this.a0 = r() * Math.PI; this.a1 = this.a0 + Math.PI / 2; },
+  angles(t) {
+    const tt = Math.max(0, t), d = this.dir;
+    return { low: this.a0 + d * (CONFIG.barSpeed * tt + 0.5 * CONFIG.barAccel * tt * tt), wl: d * (CONFIG.barSpeed + CONFIG.barAccel * tt),
+             high: this.a1 - d * CONFIG.highBarSpeed * tt, wh: -d * CONFIG.highBarSpeed, highOn: tt > CONFIG.highBarAt + 1 };
+  },
+  ground: (x, z) => (Math.hypot(x, z) < CONFIG.sweepRadius ? 0 : -Infinity),
+  hazards(b, t) {
+    if (b.y < 2.5) { const d = Math.hypot(b.x, b.z); if (d < 2) { b.x *= 2 / (d || 1); b.z *= 2 / (d || 1); } } // the pillar
+    if (b.immune > 0 || t < 0) return;
+    const A = this.angles(t);
+    barHit(b, A.low, A.wl, 0.1, 0.73) || (A.highOn && barHit(b, A.high, A.wh, 1.8, 2.3));
+  },
+  spawn(i, n) { const a = this.a0 + 0.5 + ((i >> 1) / Math.max(1, (n - 1) >> 1)) * (Math.PI - 1) + (i % 2) * Math.PI; return { x: Math.cos(a) * 8, z: Math.sin(a) * 8 }; }, // clear of the low bar
+  draw(t) {
+    const A = this.angles(t); this.low.rotation.y = -A.low; this.high.rotation.y = -A.high;
+    this.high.position.y = t < CONFIG.highBarAt ? 40 : Math.max(0, 1 - (t - CONFIG.highBarAt)) * 25;
+  },
+  bot(b, t) {
+    const A = this.angles(t), r = Math.hypot(b.x, b.z), edge = 0.8 / Math.max(1, r) / Math.abs(A.wl); // the bar's edge arrives this much earlier
+    const low = untilBar(b, A.low, A.wl) - edge, high = A.highOn ? untilBar(b, A.high, A.wh) : 9;
+    if (low > (b.lastLow ?? 0) + 0.3) { b.miss = Math.random() < (1 - b.skill) * 0.25; b.react = 0.09 + Math.random() * 0.13; } // a new pass: will this bot fluff it?
+    b.lastLow = low;
+    if (!b.goal || Math.hypot(b.goal.x - b.x, b.goal.z - b.z) < 0.8) { const a = Math.atan2(b.z, b.x) + (Math.random() - 0.5) * 1.6, d = 5 + Math.random() * 5; b.goal = { x: Math.cos(a) * d, z: Math.sin(a) * d }; } // stay out of the middle
+    const jump = !b.miss && b.onGround && low < b.react && high > 0.45;
+    return { ...(low < 0.6 || high < 0.6 ? { mx: 0, mz: 0 } : towards(b, b.goal)), jump }; // stand still while a bar comes
+  },
+});
+/** Seconds until a two-armed bar at angle th (turning at w) reaches this body's angle. */
+function untilBar(b, th, w) { let d = (Math.atan2(b.z, b.x) - th) * Math.sign(w); d = ((d % Math.PI) + Math.PI) % Math.PI; return d / Math.abs(w); }
+/** A bar through the middle at angle th: knock the body along the way the bar moves. */
+function barHit(b, th, w, y0, y1) {
+  if (b.y > y1 || b.y + 1.7 < y0) return false;
+  const c = Math.cos(th), s = Math.sin(th), along = b.x * c + b.z * s, side = -b.x * s + b.z * c;
+  if (Math.abs(side) > 0.8 || Math.abs(along) > CONFIG.sweepRadius + 1 || Math.abs(along) < 1.5) return false;
+  const dir = Math.sign(w * along) || 1;
+  knock(b, -s * dir, c * dir, CONFIG.barPush + Math.abs(w * along) * 0.6, 7);
+  return true;
+}
+
+arena("rings", {
+  title: "Shrinking Rings", hint: "The rings drop from the outside in. Dodge the cannonballs: watch for red shadows!", time: 45,
+  build(g) {
+    const E = CONFIG.ringEdges, cols = ["#ffd23f", "#52d273", "#4dabff", "#ff8c42", "#ffffff"];
+    this.rings = E.map((outer, k) => {
+      const sh = new THREE.Shape(); sh.absarc(0, 0, outer, 0, Math.PI * 2, false);
+      if (E[k + 1]) { const hole = new THREE.Path(); hole.absarc(0, 0, E[k + 1] + 0.12, 0, Math.PI * 2, true); sh.holes.push(hole); }
+      const geo = new THREE.ExtrudeGeometry(sh, { depth: 1, bevelEnabled: false, curveSegments: 40 }).rotateX(-Math.PI / 2).translate(0, -1, 0);
+      const m = new THREE.Mesh(geo, mat(cols[k], { emissive: "#ff0000", emissiveIntensity: 0 })); g.add(m); return m;
+    });
+    this.ballMeshes = Array.from({ length: 5 }, () => { const m = new THREE.Mesh(new THREE.SphereGeometry(1.1, 16, 12), mat("#2b2140", { roughness: 0.3 })); g.add(m); return m; });
+    this.marks = Array.from({ length: 5 }, () => { const m = new THREE.Mesh(new THREE.CircleGeometry(CONFIG.ballRadius, 28).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: "#ff2a55", transparent: true, depthWrite: false })); g.add(m); return m; });
+  },
+  setup(seed) {
+    const r = mulberry32(seed); this.balls = []; this.lastT = -99;
+    for (let k = 0, t = CONFIG.ballFirst; t < this.time + 5; k++, t += Math.max(0.45, CONFIG.ballEvery - k * 0.02)) {
+      const a = r() * Math.PI * 2, d = Math.sqrt(r()) * (this.radius(t) - 0.5);
+      this.balls.push({ t, x: Math.cos(a) * d, z: Math.sin(a) * d });
+    }
+  },
+  dropAt: (k) => CONFIG.ringFirst + k * CONFIG.ringEvery, // ring k (0 = outermost) falls at this t
+  radius(t) { let k = 0; while (k < CONFIG.ringEdges.length - 1 && t >= this.dropAt(k)) k++; return CONFIG.ringEdges[k]; },
+  ground(x, z, y, t) { return Math.hypot(x, z) < this.radius(t) ? 0 : -Infinity; },
+  hazards(b, t, dt) {
+    if (t < 0) return;
+    for (const ball of this.balls) {
+      if (ball.t > t || ball.t <= t - dt) continue;
+      const dx = b.x - ball.x, dz = b.z - ball.z, d = Math.hypot(dx, dz);
+      if (d < CONFIG.ballRadius && b.y < 2) knock(b, dx / (d || 1), dz / (d || 1), CONFIG.ballPush, 9);
+    }
+  },
+  spawn(i, n) { const a = (i / n) * Math.PI * 2; return { x: Math.cos(a) * 9, z: Math.sin(a) * 9 }; },
+  draw(t) {
+    this.rings.forEach((m, k) => {
+      const at = this.dropAt(k), last = k === this.rings.length - 1;
+      m.position.y = !last && t > at ? -((t - at) ** 2) * 9 : 0; m.visible = m.position.y > -60;
+      const warn = !last && t > at - 2 && t < at;
+      m.material.emissiveIntensity = warn ? 0.35 + Math.sin(t * 25) * 0.25 : 0;
+      m.position.x = warn ? Math.sin(t * 60) * 0.06 : 0;
+    });
+    let n = 0;
+    for (const b of this.balls) {
+      const left = b.t - t;
+      if (left > CONFIG.ballWarn || left < -0.25 || n >= 5) continue;
+      const mark = this.marks[n], ball = this.ballMeshes[n++];
+      mark.visible = left > 0; mark.position.set(b.x, 0.05, b.z); mark.scale.setScalar(0.3 + 0.7 * (1 - left / CONFIG.ballWarn)); mark.material.opacity = 0.25 + 0.4 * (1 - left / CONFIG.ballWarn);
+      ball.visible = left < 0.6; ball.position.set(b.x, 1.1 + Math.max(0, left) * 45, b.z);
+      if (b.t <= t && b.t > this.lastT) burst(b.x, 0.5, b.z, "#ffffff", 18, 9);
+    }
+    for (let i = n; i < 5; i++) this.marks[i].visible = this.ballMeshes[i].visible = false;
+    this.lastT = t;
+  },
+  bot(b, t) {
+    const R = Math.max(1.5, this.radius(t + 3) - 1.3);
+    if (b.goal && Math.hypot(b.goal.x, b.goal.z) > R) b.goal = null;
+    if (Math.random() < 0.02) b.miss = Math.random() > b.skill * 0.8; // sometimes a bot isn't watching the sky
+    let goal = wander(b, R);
+    for (const ball of this.balls) {
+      const left = ball.t - t, dx = b.x - ball.x, dz = b.z - ball.z, d = Math.hypot(dx, dz) || 1;
+      if (left < 0 || left > CONFIG.ballWarn || d > CONFIG.ballRadius + 0.8 || b.miss) continue;
+      let gx = ball.x + (dx / d) * (CONFIG.ballRadius + 2), gz = ball.z + (dz / d) * (CONFIG.ballRadius + 2);
+      const gr = Math.hypot(gx, gz); if (gr > R) { gx *= R / gr; gz *= R / gr; }
+      goal = b.goal = { x: gx, z: gz };
+    }
+    return { ...towards(b, goal), jump: Math.random() < 0.004 };
+  },
+});
+
+// Hex tiles (pointy top), the same grid on every floor. Tile index = floor * HEX.length + hex.
+const HEX = [];
+for (let qq = -CONFIG.hexRings; qq <= CONFIG.hexRings; qq++) for (let r = -CONFIG.hexRings; r <= CONFIG.hexRings; r++)
+  if (Math.abs(qq + r) <= CONFIG.hexRings) HEX.push({ q: qq, r, x: CONFIG.hexSize * Math.sqrt(3) * (qq + r / 2), z: CONFIG.hexSize * 1.5 * r, ring: Math.max(Math.abs(qq), Math.abs(r), Math.abs(qq + r)) });
+const HEX_AT = new Map(HEX.map((h, i) => [h.q + "," + h.r, i]));
+HEX.forEach((h) => { h.next = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]].map(([dq, dr]) => HEX_AT.get(h.q + dq + "," + (h.r + dr))).filter((i) => i !== undefined); });
+const TILE_COUNT = HEX.length * CONFIG.layers.length;
+function hexAt(x, z) {
+  const qf = ((Math.sqrt(3) / 3) * x - z / 3) / CONFIG.hexSize, rf = ((2 / 3) * z) / CONFIG.hexSize, sf = -qf - rf;
+  let qi = Math.round(qf), ri = Math.round(rf); const si = Math.round(sf);
+  const dq = Math.abs(qi - qf), dr = Math.abs(ri - rf), ds = Math.abs(si - sf);
+  if (dq > dr && dq > ds) qi = -ri - si; else if (dr > ds) ri = -qi - si;
+  return HEX_AT.get(qi + "," + ri) ?? -1;
+}
+/** Tile state for this round: s = "o" standing / "x" gone, one char per tile; c = [[tile, fallAtMs]]. */
+function tileView() {
+  const v = isHost() && hostTiles.k ? hostTiles : shared("tiles", null);
+  return v && v.k === local.key ? v : null;
+}
+function tileState(i, t) { // 0 standing, 1 cracking, 2 gone
+  const v = tileView(); if (!v) return 0;
+  if (v.s[i] === "x") return 2;
+  const c = v.c.find((c) => c[0] === i); return !c ? 0 : c[1] <= t * 1000 ? 2 : 1;
+}
+function tileUnder(b) { const h = hexAt(b.x, b.z); if (h < 0) return -1; const L = CONFIG.layers.findIndex((y) => Math.abs(b.y - y) < 0.1); return L < 0 ? -1 : L * HEX.length + h; }
+
+arena("tiles", {
+  title: "Tile Drop", hint: "Tiles fall a moment after you step on them. Keep moving, last one standing wins!", time: 120,
+  build(g) {
+    const geo = new THREE.CylinderGeometry(CONFIG.hexSize * 0.94, CONFIG.hexSize * 0.86, 0.7, 6).translate(0, -0.35, 0);
+    this.mesh = new THREE.InstancedMesh(geo, mat("#fff"), TILE_COUNT); g.add(this.mesh);
+    const floors = [["#7fd0ff", "#b9e6ff"], ["#ffd36e", "#ffe9a8"], ["#9be58f", "#c9f2bf"]];
+    this.base = Array.from({ length: TILE_COUNT }, (_, i) => new THREE.Color(floors[Math.floor(i / HEX.length) % 3][HEX[i % HEX.length].ring % 2]));
+    this.base.forEach((c, i) => this.mesh.setColorAt(i, c)); this.col = new THREE.Color(); this.red = new THREE.Color("#ff4d4d");
+  },
+  setup() { this.fell = new Float64Array(TILE_COUNT); this.done = new Uint8Array(TILE_COUNT); this.fresh = true; },
+  ground(x, z, y, t) {
+    const h = hexAt(x, z); if (h < 0) return -Infinity;
+    for (let L = 0; L < CONFIG.layers.length; L++) if (CONFIG.layers[L] <= y + 0.05 && tileState(L * HEX.length + h, t) < 2) return CONFIG.layers[L];
+    return -Infinity;
+  },
+  hazards() {},
+  spawn(i, n) { const a = (i / n) * Math.PI * 2; return { x: Math.cos(a) * 7, z: Math.sin(a) * 7 }; },
+  draw(t, now) {
+    const all = this.fresh; let changed = all; this.fresh = false;
+    for (let i = 0; i < TILE_COUNT; i++) {
+      const h = HEX[i % HEX.length], st = tileState(i, t);
+      if (!all && st === 0 && !this.done[i]) continue;      // standing and already drawn: nothing to do
+      if (st === 2 && this.done[i] === 2) continue;         // fallen out of sight
+      this.done[i] = st === 2 && this.fell[i] && now - this.fell[i] > 1300 ? 2 : st ? 1 : 0; changed = true;
+      let y = CONFIG.layers[Math.floor(i / HEX.length)], s = 1, x = h.x;
+      if (st === 2) { if (!this.fell[i]) { this.fell[i] = now; burst(h.x, y, h.z, "#ffffff", 4, 3); } const f = (now - this.fell[i]) / 1000; y -= f * f * 14; s = Math.max(0, 1 - f * 0.8); }
+      if (st === 1) { x += Math.sin(now / 25 + i) * 0.05; this.col.copy(this.base[i]).lerp(this.red, 0.55 + 0.35 * Math.sin(now / 60)); } else this.col.copy(this.base[i]);
+      this.mesh.setColorAt(i, this.col);
+      mtx.compose(v3.set(x, y, h.z), q.identity(), one.set(s, s, s)); this.mesh.setMatrixAt(i, mtx);
+    }
+    if (changed) { this.mesh.instanceMatrix.needsUpdate = true; this.mesh.instanceColor.needsUpdate = true; }
+  },
+  // Bots hop to a standing neighbor tile, wait a moment on it, then hop again (fewer tiles burnt).
+  bot(b, t) {
+    const L = CONFIG.layers.findIndex((y) => b.y > y - 1), ok = (h) => tileState(L * HEX.length + h, t) === 0;
+    const here = hexAt(b.x, b.z), arrived = b.goal && Math.hypot(b.goal.x - b.x, b.goal.z - b.z) < 0.35;
+    if (arrived && !b.waitUntil) b.waitUntil = t + 0.15 + Math.random() * 0.45;
+    if (!b.goal || b.goalL !== L || (!arrived && !ok(b.goalI)) || (arrived && t > b.waitUntil)) {
+      const others = botsNear(b), score = (h) => HEX[h].next.filter(ok).length - others.filter((o) => Math.hypot(o.x - HEX[h].x, o.z - HEX[h].z) < 2.2).length * 2 + Math.random() * 1.5;
+      let pick = (here >= 0 ? HEX[here].next : []).filter(ok);
+      if (!pick.length) pick = HEX.map((_, h) => h).filter((h) => ok(h) && Math.hypot(HEX[h].x - b.x, HEX[h].z - b.z) < 5);
+      const best = pick.map((h) => [h, score(h)]).sort((x, y) => y[1] - x[1])[0]?.[0] ?? -1;
+      Object.assign(b, { goalI: best, goalL: L, waitUntil: 0, goal: best >= 0 ? { x: HEX[best].x, z: HEX[best].z } : { x: b.x, z: b.z } });
+    }
+    const mv = arrived ? { mx: 0, mz: 0 } : towards(b, b.goal, 0.6), ahead = this.ground(b.x + mv.mx * 1.2, b.z + mv.mz * 1.2, b.y, t);
+    return { ...mv, jump: b.onGround && (mv.mx || mv.mz) && ahead === -Infinity && Math.random() < b.skill };
+  },
+});
+
+/** Where the other beans are (the host's view), for bots that don't want to crowd. */
+const botsNear = (b) => [...host.bots.values(), me, ...views.values()].filter((o) => o !== b && o.g?.visible !== false && Math.abs(o.y - b.y) < 2);
+
+// ── BEANS ───────────────────────────────────────────────────────────────────────────
+const beanGeo = new THREE.CapsuleGeometry(0.5, 0.7, 4, 14).translate(0, 0.85, 0);
+const eyeGeo = new THREE.SphereGeometry(0.15, 10, 8), pupilGeo = new THREE.SphereGeometry(0.08, 8, 6);
+const white = mat("#ffffff", { roughness: 0.3 }), dark = new THREE.MeshBasicMaterial({ color: "#1b1030" });
+const shadowGeo = new THREE.CircleGeometry(0.62, 18).rotateX(-Math.PI / 2), shadowMat = new THREE.MeshBasicMaterial({ color: "#000", transparent: true, opacity: 0.3, depthWrite: false });
+const crownGeo = new THREE.CylinderGeometry(0.42, 0.32, 0.4, 5, 1, true), crownMat = mat("#ffd23f", { metalness: 0.6, roughness: 0.25, emissive: "#a06a00", side: THREE.DoubleSide });
+function makeBean(color, name) {
+  const g = new THREE.Group(), body = new THREE.Group(); g.add(body);
+  body.add(new THREE.Mesh(beanGeo, mat(color, { roughness: 0.4 })));
+  for (const s of [-1, 1]) {
+    const eye = new THREE.Mesh(eyeGeo, white); eye.position.set(s * 0.19, 1.28, 0.38); body.add(eye);
+    const pupil = new THREE.Mesh(pupilGeo, dark); pupil.position.set(s * 0.19, 1.28, 0.51); body.add(pupil);
+  }
+  const crown = new THREE.Mesh(crownGeo, crownMat); crown.position.y = 1.95; crown.visible = false; body.add(crown);
+  if (name && !ATTRACT) {
+    const tex = canvasTex(256, 64, (c) => { c.font = "bold 32px system-ui"; c.textAlign = "center"; c.lineWidth = 6; c.strokeStyle = "#000a"; c.strokeText(name, 128, 44); c.fillStyle = "#fff"; c.fillText(name, 128, 44); });
+    const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false })); tag.scale.set(3.2, 0.8, 1); tag.position.y = 2.5; g.add(tag);
+  }
+  const shadow = new THREE.Mesh(shadowGeo, shadowMat); scene.add(shadow, g);
+  return { g, body, crown, shadow, x: 0, y: 0, z: 0, h: 0, a: 0, fresh: true };
+}
+const views = new Map(); // id -> drawn bean, for everyone but me
+/** Draw a bean at (x, y, z), eased if `ease`; a = 0 idle, 1 run, 2 air, 3 knocked. */
+function drawBean(v, x, y, z, h, a, dt, ease, t, A) {
+  if (v.fresh || !ease) { v.x = x; v.y = y; v.z = z; v.h = h; v.fresh = false; }
+  const k = 1 - Math.pow(0.0004, dt);
+  v.x += (x - v.x) * k; v.y += (y - v.y) * k; v.z += (z - v.z) * k; v.h += Math.atan2(Math.sin(h - v.h), Math.cos(h - v.h)) * k;
+  if (a === 3 && v.a !== 3) burst(v.x, v.y + 1, v.z, "#ffd23f", 16, 7);
+  v.a = a; v.g.visible = true;
+  v.g.position.set(v.x, v.y, v.z); v.g.rotation.y = v.h;
+  const tnow = performance.now() / 1000;
+  v.body.position.y = a === 1 ? Math.abs(Math.sin(tnow * 13)) * 0.14 : 0;
+  v.body.scale.set(a === 2 ? 0.92 : 1, a === 2 ? 1.12 : 1, a === 2 ? 0.92 : 1);
+  if (a === 3) v.body.rotation.x = (v.body.rotation.x + dt * 13) % (Math.PI * 2);
+  else v.body.rotation.x = (v.body.rotation.x > Math.PI ? v.body.rotation.x - Math.PI * 2 : v.body.rotation.x) * 0.8; // tumble back upright
+  const top = A.ground(v.x, v.z, v.y + 0.1, t);
+  v.shadow.visible = top > -Infinity; v.shadow.position.set(v.x, top + 0.04, v.z); v.shadow.scale.setScalar(Math.max(0.4, 1 - (v.y - top) * 0.12));
+}
+function hideBean(v) { v.g.visible = false; v.shadow.visible = false; }
+
+// ── PHYSICS ─────────────────────────────────────────────────────────────────────────
+const newBody = () => ({ x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, h: 0, onGround: true, stun: 0, immune: 0, a: 0, pace: 1, skill: 0.95, react: 0.3, miss: false, goal: null });
+function knock(b, dx, dz, power, up) { b.vx = dx * power; b.vz = dz * power; b.vy = up; b.onGround = false; b.stun = 0.8; b.immune = 0.6; }
+/** One physics step for a bean (yours or a bot's): input mx/mz in -1..1, jump true/false. */
+function stepBody(b, mx, mz, jump, dt, t, A, hazardsOn) {
+  const len = Math.hypot(mx, mz); if (len > 1) { mx /= len; mz /= len; }
+  b.immune -= dt;
+  if (b.stun > 0) { b.stun -= dt; const f = b.onGround ? 1 - 1.6 * dt : 1; b.vx *= f; b.vz *= f; }
+  else {
+    const k = Math.min(1, CONFIG.accel * (b.onGround ? 1 : CONFIG.airControl) * dt);
+    b.vx += (mx * CONFIG.speed - b.vx) * k; b.vz += (mz * CONFIG.speed - b.vz) * k;
+    if (jump && b.onGround) { b.vy = CONFIG.jump; b.onGround = false; }
+    if (len > 0.1) b.h += Math.atan2(Math.sin(Math.atan2(mx, mz) - b.h), Math.cos(Math.atan2(mx, mz) - b.h)) * Math.min(1, 12 * dt);
+  }
+  b.vy -= CONFIG.gravity * dt;
+  b.x += b.vx * dt; b.z += b.vz * dt;
+  const ny = b.y + b.vy * dt, top = A.ground(b.x, b.z, b.y, t);
+  if (b.vy <= 0 && ny <= top && b.y >= top - 0.6) { b.y = top; b.vy = 0; b.onGround = true; } else { b.y = ny; b.onGround = false; }
+  if (hazardsOn) A.hazards(b, t, dt);
+  b.a = b.stun > 0 ? 3 : !b.onGround ? 2 : len > 0.1 ? 1 : 0;
+}
+
+// ── SHOW (HOST) ─────────────────────────────────────────────────────────────────────
+const host = { bots: new Map(), wasHost: false, last: null, key: "", lastBots: 0 };
+const hostTiles = { k: "", s: "", c: [], dirty: false, lastWrite: 0, lastCrumble: 0 };
+/** The show as state has it, or the host's own newer write that hasn't come back yet. `v` only goes up. */
+function show() { const s = shared("show", null); return host.last && isHost() && (!s || host.last.v > s.v) ? host.last : s; }
+function writeShow(s) {
+  s = { ...s, v: (show()?.v ?? 0) + 1 }; host.last = s; net.setShared("show", JSON.stringify(s));
+  if (keyOf(s) !== local.key) onNewKey(s); // the host sets up a new round at once
+  return s;
+}
+const keyOf = (s) => (s ? s.id + ":" + (s.phase === "lobby" ? "L" : s.round) : "");
+const arenaOf = (s) => arenas[!s || s.phase === "lobby" ? "lobby" : CONFIG.show[s.round]];
+const aliveIn = (s) => (s.phase === "lobby" ? [] : s.inRound.filter((id) => !s.out.includes(id)));
+const isFinal = (s) => s.round === CONFIG.show.length - 1;
+function arenaTime(s) { const now = Date.now(); return s.phase === "lobby" ? (now - s.at) / 1000 : ((s.phase === "round" ? now : s.endedAt || now) - s.startAt) / 1000; }
+const newLobby = (id) => ({ id, phase: "lobby", at: Date.now(), endsAt: Date.now() + CONFIG.lobbyMs, seed: (Math.random() * 1e9) | 0, round: -1, inRound: [], out: [], roster: [], q: 0, win: null });
+
+function hostTick(dt) {
+  if (!host.wasHost) adopt();
+  let s = show();
+  const now = Date.now();
+  if (!s) s = writeShow(newLobby(1));
+  if (s.phase === "lobby" && now >= s.endsAt) s = startShow(s);
+  else if (s.phase === "round") s = judgeRound(s, now);
+  else if (s.phase === "end" && now >= s.endsAt) s = nextRound(s);
+  else if (s.phase === "results" && now >= s.endsAt) s = writeShow(newLobby(s.id + 1));
+  if (CONFIG.show[s.round] === "tiles" && s.phase === "round") tilesTick(s, now);
+  botsTick(dt, s);
+}
+/** Become host: take over the bots and the tiles exactly as state has them. */
+function adopt() {
+  host.wasHost = true; host.bots.clear(); host.key = local.key;
+  for (const b of shared("bots", [])) host.bots.set(b.i, { ...newBody(), id: b.i, name: b.n, color: b.c, x: b.x, y: b.y, z: b.z, h: b.h, pace: 0.8 + Math.random() * 0.2, skill: 0.88 + Math.random() * 0.1 });
+  const t = shared("tiles", null);
+  Object.assign(hostTiles, t ? { k: t.k, s: t.s, c: [...t.c] } : { k: "", s: "", c: [] });
+}
+function syncBots(want) {
+  for (let i = 1; host.bots.size < want && i < 64; i++) if (!host.bots.has("@" + i)) {
+    const sp = arenas.lobby.spawn(i + 4);
+    host.bots.set("@" + i, { ...newBody(), id: "@" + i, name: BOT_NAMES[(i - 1) % BOT_NAMES.length], color: COLORS[(i + 3) % COLORS.length], x: sp.x, z: sp.z, pace: 0.8 + Math.random() * 0.2, skill: 0.88 + Math.random() * 0.1 });
+  }
+  while (host.bots.size > Math.max(0, want)) host.bots.delete([...host.bots.keys()].pop());
+}
+function startShow(s) {
+  const humans = livePlayers();
+  syncBots(CONFIG.seats - humans.length);
+  const roster = [...humans.map((id) => [id, nameOf(id), colorOf(id)]), ...[...host.bots.values()].map((b) => [b.id, b.name, b.color])];
+  return beginRound({ ...s, roster, out: [] }, 0, roster.map((r) => r[0]));
+}
+function beginRound(s, r, ids) {
+  const type = CONFIG.show[r], now = Date.now(), final = r === CONFIG.show.length - 1;
+  const q = final ? 1 : ids.length - Math.max(1, Math.round(ids.length * (CONFIG.cut[r] ?? 0.35)));
+  const ns = { ...s, phase: "round", round: r, inRound: ids, q, startAt: now + CONFIG.introMs, endsAt: now + CONFIG.introMs + arenas[type].time * 1000, endedAt: 0 };
+  if (type === "tiles") { Object.assign(hostTiles, { k: keyOf(ns), s: "o".repeat(TILE_COUNT), c: [], dirty: true, lastWrite: 0 }); flushTiles(); } // the world first, then the round
+  return writeShow(ns);
+}
+/** Count who fell (each player reports its own; the host checks bots), then end the round if it's decided. */
+function judgeRound(s, now) {
+  if (now < s.startAt) return s;
+  const live = livePlayers(), key = keyOf(s), out = [...s.out];
+  for (const id of aliveIn(s)) {
+    const b = host.bots.get(id);
+    const gone = isBot(id) ? !b || b.y < CONFIG.outY : id === net.sessionId ? me.outKey === key : !live.includes(id) || S.entities.players[id]?.o === key;
+    if (gone) out.push(id);
+  }
+  if (out.length !== s.out.length) s = writeShow({ ...s, out });
+  const left = aliveIn(s), allHumansOut = !ATTRACT && s.inRound.some((id) => !isBot(id)) && left.every(isBot);
+  if (!(isFinal(s) ? left.length <= 1 : left.length <= s.q) && now < s.endsAt && !allHumansOut) return s;
+  if (isFinal(s) || left.length <= 1 || allHumansOut) return endShow(s, now, left.length === 1 ? left[0] : null);
+  return writeShow({ ...s, phase: "end", endedAt: now, endsAt: now + CONFIG.endMs });
+}
+function nextRound(s) { const left = aliveIn(s); return left.length <= 1 || isFinal(s) ? endShow(s, Date.now(), left[0] || null) : beginRound(s, s.round + 1, left); }
+const endShow = (s, now, win) => writeShow({ ...s, phase: "results", endedAt: s.endedAt || now, endsAt: now + CONFIG.resultsMs, win });
+
+function crackTile(i, s) {
+  if (i < 0 || hostTiles.s[i] !== "o" || hostTiles.c.some((c) => c[0] === i)) return;
+  hostTiles.c.push([i, Date.now() - s.startAt + CONFIG.tileDelay]); hostTiles.dirty = true;
+}
+function tilesTick(s, now) {
+  const rel = now - s.startAt;
+  if (rel < 0) return;
+  const due = hostTiles.c.filter((c) => c[1] <= rel);
+  if (due.length) { const chars = hostTiles.s.split(""); for (const [i] of due) chars[i] = "x"; hostTiles.s = chars.join(""); hostTiles.c = hostTiles.c.filter((c) => c[1] > rel); hostTiles.dirty = true; }
+  const crumble = rel / 1000 - CONFIG.crumbleAfter; // the final always ends: later on the floor crumbles by itself
+  if (crumble > 0 && now - hostTiles.lastCrumble > Math.max(80, 600 - crumble * 15)) {
+    hostTiles.lastCrumble = now;
+    const standing = [...hostTiles.s].map((ch, i) => (ch === "o" ? i : -1)).filter((i) => i >= 0);
+    if (standing.length) crackTile(standing[Math.floor(Math.random() * standing.length)], s);
+  }
+  if (hostTiles.dirty && now - hostTiles.lastWrite > 120) flushTiles();
+}
+function flushTiles() { hostTiles.dirty = false; hostTiles.lastWrite = Date.now(); net.setShared("tiles", JSON.stringify({ k: hostTiles.k, s: hostTiles.s, c: hostTiles.c })); }
+
+function botsTick(dt, s) {
+  const key = keyOf(s), A = arenaOf(s), t = arenaTime(s), alive = aliveIn(s);
+  if (s.phase === "lobby") syncBots(CONFIG.seats - livePlayers().length);
+  if (host.key !== key) { // a new round: bots to their spots
+    host.key = key;
+    for (const b of host.bots.values()) { const i = s.phase === "lobby" ? +b.id.slice(1) + 4 : s.inRound.indexOf(b.id); if (i >= 0) Object.assign(b, A.spawn(i, s.inRound.length || 1), { y: 0, vx: 0, vy: 0, vz: 0, stun: 0, goal: null }); }
+  }
+  for (const b of host.bots.values()) {
+    b.active = s.phase === "lobby" || alive.includes(b.id);
+    if (!b.active || (s.phase === "round" && t < 0)) continue;
+    const inp = s.phase === "results" ? { mx: 0, mz: 0, jump: s.win === b.id || Math.random() < 0.01 } : s.phase === "end" ? { mx: 0, mz: 0, jump: false } : A.bot(b, t);
+    stepBody(b, inp.mx, inp.mz, inp.jump, dt, t, A, s.phase === "round");
+    if (b.y < CONFIG.outY && s.phase !== "round") Object.assign(b, A.spawn(Math.max(0, s.inRound.indexOf(b.id)), s.inRound.length || 1), { y: 0, vy: 0 });
+    if (A === arenas.tiles && s.phase === "round" && b.onGround) crackTile(tileUnder(b), s);
+  }
+  const now = performance.now();
+  if (now - host.lastBots > 100) { host.lastBots = now; net.setShared("bots", JSON.stringify(botList())); }
+}
+function botList() {
+  if (!isHost()) return shared("bots", []);
+  return [...host.bots.values()].filter((b) => b.active).map((b) => ({ i: b.id, n: b.name, c: b.color, x: +b.x.toFixed(2), y: +b.y.toFixed(2), z: +b.z.toFixed(2), h: +b.h.toFixed(2), a: b.a }));
+}
+
+// ── ME ──────────────────────────────────────────────────────────────────────────────
+let myName = "", myColor = COLORS[0]; // the color is picked on join: the first one nobody has
+try { myName = localStorage.getItem("mpa-name") || ""; } catch {}
+if (!myName) myName = ["Bouncy", "Speedy", "Lucky", "Wiggly", "Sneaky", "Jolly"][Math.floor(Math.random() * 6)] + " " + ["Bean", "Jelly", "Pickle", "Muffin", "Nugget"][Math.floor(Math.random() * 5)];
+const me = { ...newBody(), outKey: "", lastSend: 0, view: null };
+const local = { key: "", spectate: "", bigUntil: 0, big: "", wonFor: -1 };
+const nameOf = (id) => (id === net.sessionId ? myName : isBot(id) ? host.bots.get(id)?.name || "Bot" : S.entities.players[id]?.n || "Player");
+const colorOf = (id) => (id === net.sessionId ? myColor : S.entities.players[id]?.c || "#ccc");
+const amPlaying = (s) => s.phase === "lobby" || (s.inRound.includes(net.sessionId) && !s.out.includes(net.sessionId) && me.outKey !== keyOf(s));
+
+/** A new round (or lobby) seen in state: set up the arena and put my bean on its spot. */
+function onNewKey(s) {
+  local.key = keyOf(s);
+  const A = arenaOf(s);
+  for (const a of Object.values(arenas)) a.group.visible = a === A;
+  A.setup(s.seed + s.round * 101);
+  const i = s.phase === "lobby" ? livePlayers().indexOf(net.sessionId) : s.inRound.indexOf(net.sessionId);
+  Object.assign(me, A.spawn(Math.max(0, i), s.inRound.length || 1), { y: 0, vx: 0, vy: 0, vz: 0, stun: 0, outKey: "", goal: null, steps: new Set() });
+  $("over").hidden = true;
+}
+function myTick(dt, s) {
+  const A = arenaOf(s), key = keyOf(s), t = arenaTime(s);
+  if (!amPlaying(s)) { publish(""); return; }
+  if (!(s.phase === "round" && t < 0)) {
+    const inp = ATTRACT ? (s.phase === "round" || s.phase === "lobby" ? A.bot(me, t) : { mx: 0, mz: 0, jump: s.win === net.sessionId }) : readInput();
+    stepBody(me, inp.mx, inp.mz, inp.jump, dt, t, A, s.phase === "round");
+  }
+  if (me.y < CONFIG.outY) {
+    if (s.phase === "round" && t >= 0) { me.outKey = key; net.me.set("o", key); bigText("ELIMINATED", 2200); }
+    else Object.assign(me, A.spawn(Math.max(0, s.inRound.indexOf(net.sessionId)), s.inRound.length || 1), { y: 0, vy: 0 });
+  }
+  if (A === arenas.tiles && s.phase === "round" && t >= 0 && me.onGround) {
+    const i = tileUnder(me);
+    if (i >= 0 && !me.steps.has(i)) { me.steps.add(i); if (isHost()) crackTile(i, s); else net.send("stepped", { k: key, i }); }
+  }
+  publish(key);
+}
+function publish(k) {
+  const now = performance.now();
+  if (now - me.lastSend < 66) return; // ~15/s
+  me.lastSend = now;
+  net.me.set("p", JSON.stringify({ k, x: +me.x.toFixed(2), y: +me.y.toFixed(2), z: +me.z.toFixed(2), h: +me.h.toFixed(2), a: me.a }));
+}
+
+// ── HUD & RESULTS ───────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const bigText = (html, ms) => { local.big = html; local.bigUntil = performance.now() + ms; };
+let board = null, boardFor = -1;
+function hud(s) {
+  const A = arenaOf(s), t = arenaTime(s), now = Date.now(), left = aliveIn(s).length;
+  let big = performance.now() < local.bigUntil ? local.big : "";
+  if (s.phase === "round" && t < 0) big = t < -3 ? `<small>Round ${s.round + 1} of ${CONFIG.show.length}${isFinal(s) ? " · THE FINAL" : ""}</small>${esc(A.title)}` : String(Math.ceil(-t));
+  else if (s.phase === "round" && t < 0.8) big = "GO!";
+  else if (s.phase === "end") big = s.inRound.includes(net.sessionId) ? (amPlaying(s) ? "QUALIFIED!" : "ELIMINATED") : "ROUND OVER";
+  $("big").innerHTML = big;
+  if (ATTRACT) { $("round").textContent = $("msg").textContent = $("net").textContent = $("big").textContent = ""; return; }
+  const secs = Math.max(0, Math.ceil((s.endsAt - now) / 1000)), clock = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  $("round").innerHTML = s.phase === "lobby" ? `Next show in ${secs}s<small>${livePlayers().length} player(s) + bots</small>`
+    : s.phase === "results" ? "" : `Round ${s.round + 1}: ${esc(A.title)}<small>${isFinal(s) ? `${left} left · last one standing wins` : `${s.q} qualify · ${left} still in`} · ${clock}</small>`;
+  const spectating = s.phase !== "lobby" && s.phase !== "results" && !amPlaying(s);
+  $("msg").textContent = spectating ? (s.inRound.includes(net.sessionId) || s.out.includes(net.sessionId) ? `Spectating ${nameOf(local.spectate) || ""}` : "Spectating · you're in the next show") : (s.phase === "lobby" || (s.phase === "round" && t < 5)) ? A.hint : "";
+  const n = livePlayers().length;
+  $("net").textContent = net.offline ? "Offline: playing with bots" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the show" : ""}`;
+  $("over").hidden = !(s.phase === "results" && now - s.endedAt > 1800);
+  if (s.phase === "results") results(s, now);
+}
+function results(s, now) {
+  const name = (id) => (s.roster.find((r) => r[0] === id) || [id, "Player"])[1];
+  $("title").textContent = s.win === net.sessionId ? "You won the crown! 👑" : s.win ? `${name(s.win)} wins the crown! 👑` : aliveIn(s).length ? "Knocked out of the show!" : "No winner this time";
+  const order = [...(s.win ? [s.win] : []), ...aliveIn(s).filter((id) => id !== s.win), ...[...s.out].reverse()];
+  $("results").innerHTML = order.slice(0, 10).map((id) => `<li class="${id === net.sessionId ? "me" : ""}">${esc(name(id))}${id === s.win ? " 👑" : ""}<span>${id === s.win ? "winner" : s.out.includes(id) ? "out" : "still in"}</span></li>`).join("");
+  $("next").textContent = `Next show in ${Math.max(0, Math.ceil((s.endsAt - now) / 1000))}s`;
+  if (boardFor !== s.id) { boardFor = s.id; showBoard(s.win === net.sessionId); }
+}
+function showBoard(won) {
+  const list = $("board");
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li>Loading…</li>";
+  (won ? board.submit(1, "inc").catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score} 👑</span></li>`).join("") : "<li>No crowns yet. Win the first.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+$("again").onclick = () => { const s = show(); if (!s || s.phase !== "results") return; if (isHost()) playAgain(s); else net.send("again", {}); $("over").hidden = true; };
+const playAgain = (s) => { if (s.phase === "results") writeShow({ ...s, endsAt: Math.min(s.endsAt, Date.now() + 1200) }); };
+
+// ── INPUT ───────────────────────────────────────────────────────────────────────────
+const touchUI = matchMedia("(pointer: coarse)").matches && !ATTRACT;
+$("jump").hidden = !touchUI;
+const keys = new Set(), stick = { id: -1, x: 0, y: 0, mx: 0, mz: 0 };
+let jumpAt = 0;
+addEventListener("keydown", (e) => { keys.add(e.key.toLowerCase()); if (e.key === " ") { e.preventDefault(); jumpAt = performance.now(); } });
+addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+function readInput() {
+  const k = (a, b) => (keys.has(a) || keys.has(b) ? 1 : 0);
+  const mx = k("d", "arrowright") - k("a", "arrowleft") + stick.mx, mz = k("s", "arrowdown") - k("w", "arrowup") + stick.mz;
+  return { mx, mz, jump: keys.has(" ") || performance.now() - jumpAt < 150 };
+}
+const cv = renderer.domElement;
+cv.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "mouse" || stick.id >= 0) return;
+  e.preventDefault(); cv.setPointerCapture(e.pointerId);
+  Object.assign(stick, { id: e.pointerId, x: e.clientX, y: e.clientY, mx: 0, mz: 0 });
+  Object.assign($("stick").style, { left: e.clientX + "px", top: e.clientY + "px" }); $("stick").hidden = false;
+});
+cv.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== stick.id) return;
+  const dx = e.clientX - stick.x, dy = e.clientY - stick.y, d = Math.hypot(dx, dy), k = Math.min(1, d / 50) / (d || 1);
+  stick.mx = dx * k; stick.mz = dy * k;
+  $("stick").firstElementChild.style.transform = `translate(${stick.mx * 35}px, ${stick.mz * 35}px)`;
+});
+for (const ev of ["pointerup", "pointercancel"]) cv.addEventListener(ev, (e) => { if (e.pointerId === stick.id) { Object.assign(stick, { id: -1, mx: 0, mz: 0 }); $("stick").hidden = true; } });
+const jb = $("jump");
+jb.addEventListener("pointerdown", (e) => { e.preventDefault(); jumpAt = performance.now(); jb.classList.add("on"); });
+for (const ev of ["pointerup", "pointercancel", "pointerleave"]) jb.addEventListener(ev, () => jb.classList.remove("on"));
+document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+// ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
+let last = performance.now(), lastHb = 0, lastHud = 0;
+const camPos = new THREE.Vector3(0, 14, 20), camLook = new THREE.Vector3();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); }
+  let s = show();
+  if (s && keyOf(s) !== local.key) onNewKey(s);
+  if (isHost()) hostTick(dt); else host.wasHost = false;
+  s = show();
+  if (s) { myTick(dt, s); drawWorld(dt, s, now); }
+  drawParts(dt, now);
+  renderer.render(scene, camera);
+  if (s && now - lastHud > 100) { lastHud = now; hud(s); }
+  requestAnimationFrame(frame);
+}
+function drawWorld(dt, s, now) {
+  const A = arenaOf(s), t = arenaTime(s), alive = new Set(s.phase === "lobby" ? livePlayers() : aliveIn(s)), seen = new Set();
+  A.draw(t, now);
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    if (id === net.sessionId) continue;
+    const st = parse(p.p, null);
+    if (!st || st.k !== local.key || !alive.has(id)) continue;
+    seen.add(id);
+    if (!views.has(id)) views.set(id, makeBean(p.c || "#ccc", p.n || "Player"));
+    drawBean(views.get(id), st.x, st.y, st.z, st.h, st.a, dt, true, t, A);
+  }
+  for (const b of botList()) {
+    seen.add(b.i);
+    if (!views.has(b.i)) views.set(b.i, makeBean(b.c, b.n));
+    drawBean(views.get(b.i), b.x, b.y, b.z, b.h, b.a, dt, !isHost(), t, A);
+  }
+  for (const [id, v] of views) { if (!seen.has(id)) hideBean(v); v.crown.visible = s.phase === "results" && s.win === id; }
+  if (!me.view) me.view = makeBean(myColor, "");
+  if (amPlaying(s)) drawBean(me.view, me.x, me.y, me.z, me.h, me.a, dt, false, t, A); else hideBean(me.view);
+  me.view.crown.visible = s.phase === "results" && s.win === net.sessionId;
+  if (s.phase === "results" && s.win && Math.random() < dt * 4) { const w = s.win === net.sessionId ? me : views.get(s.win); if (w) burst(w.x, w.y + 2.5, w.z, COLORS[Math.floor(Math.random() * COLORS.length)], 10, 8); }
+  // camera: chase my bean, the winner, or someone still in; ?attract circles the arena
+  if (ATTRACT) {
+    const a = now / 9000, ys = botList().map((b) => b.y).sort((p, q) => p - q), y = ys.length ? ys[ys.length >> 1] : 0; // follow the middle of the pack
+    camPos.set(Math.sin(a) * 18, y + 13, Math.cos(a) * 18); camera.position.lerp(camPos, 0.04); camLook.lerp(v3.set(0, y - 2, 0), 0.04);
+  } else {
+    if (!alive.has(local.spectate) || views.get(local.spectate)?.g.visible === false) local.spectate = [...alive].find((id) => id !== net.sessionId && views.get(id)?.g.visible) || "";
+    const focus = s.phase === "results" && s.win ? (s.win === net.sessionId ? me : views.get(s.win)) : amPlaying(s) ? me : views.get(local.spectate) || me;
+    const far = camera.aspect < 1 ? 1.5 : 1;
+    camPos.set(focus.x, Math.max(focus.y, -6) + 8 * far, focus.z + 10 * far); camLook.set(focus.x, Math.max(focus.y, -6) + 0.5, focus.z - 1.5);
+    camera.position.lerp(camPos, 1 - Math.pow(0.003, dt));
+  }
+  camera.lookAt(camLook);
+}
+
+(async function start() {
+  net = await connect();
+  net.onState((st) => { S = st; });
+  net.on("stepped", (m) => { const s = show(); if (isHost() && m && s && s.phase === "round" && m.k === keyOf(s)) crackTile(m.i | 0, s); });
+  net.on("again", () => { const s = show(); if (isHost() && s) playAgain(s); });
+  net.onDisconnect(() => { $("net").textContent = "Reconnecting…"; });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = new Set(Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c));
+  myColor = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
+  net.me.set({ n: myName, c: myColor, hb: Date.now() });
+  if (ATTRACT) Object.assign(CONFIG, { show: ["tiles"], seats: 12, lobbyMs: 600, introMs: 1200, resultsMs: 2500, crumbleAfter: 6 });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
