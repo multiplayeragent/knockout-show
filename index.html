@@ -540,8 +540,9 @@ function adopt() {
 }
 function syncBots(want) {
   for (let i = 1; host.bots.size < want && i < 64; i++) if (!host.bots.has("@" + i)) {
-    const sp = arenas.lobby.spawn(i + 4);
-    host.bots.set("@" + i, { ...newBody(), id: "@" + i, name: BOT_NAMES[(i - 1) % BOT_NAMES.length], color: COLORS[(i + 3) % COLORS.length], x: sp.x, z: sp.z, pace: 0.8 + Math.random() * 0.2, skill: 0.88 + Math.random() * 0.1 });
+    const sp = arenas.lobby.spawn(i + 4), used = new Set([myColor, ...Object.values(S.entities.players || {}).map((p) => p.c), ...[...host.bots.values()].map((b) => b.color)]);
+    const color = [...COLORS.keys()].map((k) => COLORS[(i + 3 + k) % COLORS.length]).find((c) => !used.has(c)) || COLORS[(i + 3) % COLORS.length];
+    host.bots.set("@" + i, { ...newBody(), id: "@" + i, name: BOT_NAMES[(i - 1) % BOT_NAMES.length], color, x: sp.x, z: sp.z, pace: 0.8 + Math.random() * 0.2, skill: 0.88 + Math.random() * 0.1 });
   }
   while (host.bots.size > Math.max(0, want)) host.bots.delete([...host.bots.keys()].pop());
 }
@@ -626,6 +627,15 @@ const me = { ...newBody(), outKey: "", lastSend: 0, view: null };
 const local = { key: "", spectate: "", bigUntil: 0, big: "", wonFor: -1 };
 const nameOf = (id) => (id === net.sessionId ? myName : isBot(id) ? host.bots.get(id)?.name || "Bot" : S.entities.players[id]?.n || "Player");
 const colorOf = (id) => (id === net.sessionId ? myColor : S.entities.players[id]?.c || "#ccc");
+/** Two people joined at once in one color (or a bot has mine): the one with the higher sessionId picks a free one. */
+function fixColor() {
+  const others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId);
+  const botColors = [...botList().map((b) => b.c), ...(show()?.roster || []).filter((r) => isBot(r[0])).map((r) => r[2])];
+  if (!others.some(([id, p]) => p.c === myColor && id < net.sessionId) && !botColors.includes(myColor)) return;
+  const taken = new Set([...others.map(([, p]) => p.c), ...botColors]);
+  myColor = COLORS.find((c) => !taken.has(c)) || myColor; net.me.set("c", myColor);
+  if (me.view) { scene.remove(me.view.g, me.view.shadow); me.view = null; } // redrawn in the new color next frame
+}
 const amPlaying = (s) => s.phase === "lobby" || (s.inRound.includes(net.sessionId) && !s.out.includes(net.sessionId) && me.outKey !== keyOf(s));
 
 /** A new round (or lobby) seen in state: set up the arena and put my bean on its spot. */
@@ -667,6 +677,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const bigText = (html, ms) => { local.big = html; local.bigUntil = performance.now() + ms; };
 let board = null, boardFor = -1;
+let dropped = false; // true while the connection is down: the HUD keeps showing "Reconnecting…"
 function hud(s) {
   const A = arenaOf(s), t = arenaTime(s), now = Date.now(), left = aliveIn(s).length;
   let big = performance.now() < local.bigUntil ? local.big : "";
@@ -681,7 +692,7 @@ function hud(s) {
   const spectating = s.phase !== "lobby" && s.phase !== "results" && !amPlaying(s);
   $("msg").textContent = spectating ? (s.inRound.includes(net.sessionId) || s.out.includes(net.sessionId) ? `Spectating ${nameOf(local.spectate) || ""}` : "Spectating · you're in the next show") : (s.phase === "lobby" || (s.phase === "round" && t < 5)) ? A.hint : "";
   const n = livePlayers().length;
-  $("net").textContent = net.offline ? "Offline: playing with bots" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the show" : ""}`;
+  $("net").textContent = net.offline ? "Offline: playing with bots" : dropped ? "Reconnecting…" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the show" : ""}`;
   $("over").hidden = !(s.phase === "results" && now - s.endedAt > 1800);
   if (s.phase === "results") results(s, now);
 }
@@ -739,8 +750,8 @@ document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: fal
 let last = performance.now(), lastHb = 0, lastHud = 0;
 const camPos = new THREE.Vector3(0, 14, 20), camLook = new THREE.Vector3();
 function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); }
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now; // never negative: the first frame can be stamped before `last`
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
   let s = show();
   if (s && keyOf(s) !== local.key) onNewKey(s);
   if (isHost()) hostTick(dt); else host.wasHost = false;
@@ -759,7 +770,8 @@ function drawWorld(dt, s, now) {
     const st = parse(p.p, null);
     if (!st || st.k !== local.key || !alive.has(id)) continue;
     seen.add(id);
-    if (!views.has(id)) views.set(id, makeBean(p.c || "#ccc", p.n || "Player"));
+    if (views.has(id) && views.get(id).c !== (p.c || "#ccc")) { scene.remove(views.get(id).g, views.get(id).shadow); views.delete(id); } // they changed color
+    if (!views.has(id)) views.set(id, Object.assign(makeBean(p.c || "#ccc", p.n || "Player"), { c: p.c || "#ccc" }));
     drawBean(views.get(id), st.x, st.y, st.z, st.h, st.a, dt, true, t, A);
   }
   for (const b of botList()) {
@@ -791,9 +803,10 @@ function drawWorld(dt, s, now) {
   net.onState((st) => { S = st; });
   net.on("stepped", (m) => { const s = show(); if (isHost() && m && s && s.phase === "round" && m.k === keyOf(s)) crackTile(m.i | 0, s); });
   net.on("again", () => { const s = show(); if (isHost() && s) playAgain(s); });
-  net.onDisconnect(() => { $("net").textContent = "Reconnecting…"; });
+  net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
+  net.onReconnect(() => { dropped = false; });
   if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
-  const taken = new Set(Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c));
+  const taken = new Set([...Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c), ...shared("bots", []).map((b) => b.c)]);
   myColor = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
   net.me.set({ n: myName, c: myColor, hb: Date.now() });
   if (ATTRACT) Object.assign(CONFIG, { show: ["tiles"], seats: 12, lobbyMs: 600, introMs: 1200, resultsMs: 2500, crumbleAfter: 6 });
