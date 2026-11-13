@@ -23,6 +23,7 @@
   .card ol { margin: 0; padding-left: 24px; font-size: 14px; }
   .card li span { float: right; font-variant-numeric: tabular-nums; }
   .card li.me { color: #ffd23f; font-weight: 700; }
+  .card li.note { list-style: none; margin-left: -24px; opacity: .8; }
   .card p { margin: 10px 0; font-size: 13px; opacity: .85; }
   button.go { width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: #ffd23f; color: #3a0d4a; font: 800 17px system-ui, sans-serif; cursor: pointer; }
   #stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; background: #ffffff22; border: 2px solid #ffffff77; pointer-events: none; }
@@ -43,7 +44,7 @@
 <button id="jump" hidden>JUMP</button>
 <div id="over" hidden><div class="card">
   <h2 id="title">Show over</h2><ol id="results"></ol>
-  <h3>Most crowns</h3><ol id="board"><li>Loading…</li></ol>
+  <h3>Most crowns</h3><ol id="board"><li class="note">Loading…</li></ol>
   <p id="next"></p>
   <button class="go" id="again">Play again</button>
 </div></div>
@@ -625,7 +626,7 @@ let myName = "", myColor = COLORS[0]; // the color is picked on join: the first 
 try { myName = localStorage.getItem("mpa-name") || ""; } catch {}
 if (!myName) myName = ["Bouncy", "Speedy", "Lucky", "Wiggly", "Sneaky", "Jolly"][Math.floor(Math.random() * 6)] + " " + ["Bean", "Jelly", "Pickle", "Muffin", "Nugget"][Math.floor(Math.random() * 5)];
 const me = { ...newBody(), outKey: "", lastSend: 0, view: null };
-const local = { key: "", spectate: "", bigUntil: 0, big: "", wonFor: -1 };
+const local = { key: "", spectate: "", bigUntil: 0, big: "", wonFor: -1, againFor: -1 };
 const nameOf = (id) => (id === net.sessionId ? myName : isBot(id) ? host.bots.get(id)?.name || "Bot" : S.entities.players[id]?.n || "Player");
 const colorOf = (id) => (id === net.sessionId ? myColor : S.entities.players[id]?.c || "#ccc");
 /** Two people joined at once in one color (or a bot has mine): the one with the higher sessionId picks a free one. */
@@ -694,7 +695,7 @@ function hud(s) {
   $("msg").textContent = spectating ? (s.inRound.includes(net.sessionId) || s.out.includes(net.sessionId) ? `Spectating ${nameOf(local.spectate) || ""}` : "Spectating · you're in the next show") : (s.phase === "lobby" || (s.phase === "round" && t < 5)) ? A.hint : "";
   const n = livePlayers().length;
   $("net").textContent = net.offline ? "Offline: playing with bots" : dropped ? "Reconnecting…" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the show" : ""}`;
-  $("over").hidden = !(s.phase === "results" && now - s.endedAt > 1800);
+  $("over").hidden = !(s.phase === "results" && now - s.endedAt > 1800) || local.againFor === s.id; // stays closed after "Play again"
   if (s.phase === "results") results(s, now);
 }
 function results(s, now) {
@@ -707,13 +708,13 @@ function results(s, now) {
 }
 function showBoard(won) {
   const list = $("board");
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
-  list.innerHTML = "<li>Loading…</li>";
+  if (!board) { list.innerHTML = "<li class='note'>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li class='note'>Loading…</li>";
   (won ? board.submit(1, "inc").catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score} 👑</span></li>`).join("") : "<li>No crowns yet. Win the first.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score} 👑</span></li>`).join("") : "<li class='note'>No crowns yet. Win the first.</li>";
+  }).catch(() => { list.innerHTML = "<li class='note'>Couldn't load the leaderboard.</li>"; });
 }
-$("again").onclick = () => { const s = show(); if (!s || s.phase !== "results") return; if (isHost()) playAgain(s); else net.send("again", {}); $("over").hidden = true; };
+$("again").onclick = () => { const s = show(); if (!s || s.phase !== "results") return; if (isHost()) playAgain(s); else net.send("again", {}); local.againFor = s.id; $("over").hidden = true; };
 const playAgain = (s) => { if (s.phase === "results") writeShow({ ...s, endsAt: Math.min(s.endsAt, Date.now() + 1200) }); };
 
 // ── INPUT ───────────────────────────────────────────────────────────────────────────
@@ -723,6 +724,7 @@ const keys = new Set(), stick = { id: -1, x: 0, y: 0, mx: 0, mz: 0 };
 let jumpAt = 0;
 addEventListener("keydown", (e) => { keys.add(e.key.toLowerCase()); if (e.key === " ") { e.preventDefault(); jumpAt = performance.now(); } });
 addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => keys.clear()); // a key let go in another window would otherwise stay held
 function readInput() {
   const k = (a, b) => (keys.has(a) || keys.has(b) ? 1 : 0);
   const mx = k("d", "arrowright") - k("a", "arrowleft") + stick.mx, mz = k("s", "arrowdown") - k("w", "arrowup") + stick.mz;
@@ -795,7 +797,11 @@ function drawWorld(dt, s, now) {
     if (!alive.has(local.spectate) || views.get(local.spectate)?.g.visible === false) local.spectate = [...alive].find((id) => id !== net.sessionId && views.get(id)?.g.visible) || "";
     const focus = s.phase === "results" && s.win ? (s.win === net.sessionId ? me : views.get(s.win)) : amPlaying(s) ? me : views.get(local.spectate) || me;
     const far = camera.aspect < 1 ? 1.5 : 1;
-    camPos.set(focus.x, Math.max(focus.y, -6) + 8 * far, focus.z + 10 * far); camLook.set(focus.x, Math.max(focus.y, -6) + 0.5, focus.z - 1.5);
+    const fy = Math.max(focus.y, A === arenas.tiles ? CONFIG.layers[CONFIG.layers.length - 1] : -6); // follow a fall, but not into the slime (tiles: down to the lowest floor)
+    let camY = fy + 8 * far;
+    if (A === arenas.tiles) { const above = CONFIG.layers.filter((y) => y > fy + 1); if (above.length) camY = Math.min(camY, Math.min(...above) - 1.3); } // on a lower floor: stay under the floor above, not looking through it
+    camPos.set(focus.x, camY, focus.z + Math.min(10 * far, Math.max(7 * far, (camY - fy) * 2.2))); // a lower camera comes in closer
+    camLook.set(focus.x, fy + 0.5, focus.z - 1.5);
     camera.position.lerp(camPos, 1 - Math.pow(0.003, dt));
   }
   camera.lookAt(camLook);
