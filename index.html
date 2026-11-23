@@ -320,9 +320,10 @@ arena("rings", {
   radius(t) { let k = 0; while (k < CONFIG.ringEdges.length - 1 && t >= this.dropAt(k)) k++; return CONFIG.ringEdges[k]; },
   ground(x, z, y, t) { return Math.hypot(x, z) < this.radius(t) ? 0 : -Infinity; },
   hazards(b, t, dt) {
+    let prev = b.ballT; if (!(prev <= t) || t - prev > 0.5) prev = t - dt; b.ballT = t; // the last time checked: a slow frame doesn't skip a ball
     if (t < 0) return;
     for (const ball of this.balls) {
-      if (ball.t > t || ball.t <= t - dt) continue;
+      if (ball.t > t || ball.t <= prev) continue;
       const dx = b.x - ball.x, dz = b.z - ball.z, d = Math.hypot(dx, dz);
       if (d < CONFIG.ballRadius && b.y < 2) knock(b, dx / (d || 1), dz / (d || 1), CONFIG.ballPush, 9);
     }
@@ -596,6 +597,12 @@ function tilesTick(s, now) {
   }
   if (hostTiles.dirty && now - hostTiles.lastWrite > 120) flushTiles();
 }
+/** A "stepped" from another player: only a contestant still in, after GO, on a real tile near where it says it is. */
+function steppedOk(s, from, i) {
+  if (!Number.isInteger(i) || i < 0 || i >= TILE_COUNT || Date.now() < s.startAt || !aliveIn(s).includes(from)) return false;
+  const p = parse(S.entities.players[from]?.p, null), h = HEX[i % HEX.length];
+  return !!p && p.k === keyOf(s) && Math.hypot(p.x - h.x, p.z - h.z) < CONFIG.hexSize * 2.5 && Math.abs(p.y - CONFIG.layers[Math.floor(i / HEX.length)]) < 2;
+}
 function flushTiles() { hostTiles.dirty = false; hostTiles.lastWrite = Date.now(); net.setShared("tiles", JSON.stringify({ k: hostTiles.k, s: hostTiles.s, c: hostTiles.c })); }
 
 function botsTick(dt, s) {
@@ -700,7 +707,7 @@ function hud(s) {
 }
 function results(s, now) {
   const name = (id) => (s.roster.find((r) => r[0] === id) || [id, "Player"])[1];
-  $("title").textContent = s.win === net.sessionId ? "You won the crown! 👑" : s.win ? `${name(s.win)} wins the crown! 👑` : aliveIn(s).length ? "Knocked out of the show!" : "No winner this time";
+  $("title").textContent = s.win === net.sessionId ? "You won the crown! 👑" : s.win ? `${name(s.win)} wins the crown! 👑` : s.out.includes(net.sessionId) ? "Knocked out of the show!" : "No winner this time";
   const order = [...(s.win ? [s.win] : []), ...aliveIn(s).filter((id) => id !== s.win), ...[...s.out].reverse()];
   $("results").innerHTML = order.slice(0, 10).map((id) => `<li class="${id === net.sessionId ? "me" : ""}">${esc(name(id))}${id === s.win ? " 👑" : ""}<span>${id === s.win ? "winner" : s.out.includes(id) ? "out" : "still in"}</span></li>`).join("");
   $("next").textContent = `Next show in ${Math.max(0, Math.ceil((s.endsAt - now) / 1000))}s`;
@@ -810,7 +817,7 @@ function drawWorld(dt, s, now) {
 (async function start() {
   net = await connect();
   net.onState((st) => { S = st; });
-  net.on("stepped", (m) => { const s = show(); if (isHost() && m && s && s.phase === "round" && m.k === keyOf(s)) crackTile(m.i | 0, s); });
+  net.on("stepped", (m, from) => { const s = show(); if (isHost() && m && s && s.phase === "round" && m.k === keyOf(s) && steppedOk(s, from, m.i)) crackTile(m.i, s); });
   net.on("again", () => { const s = show(); if (isHost() && s) playAgain(s); });
   net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
   net.onReconnect(() => { dropped = false; });
